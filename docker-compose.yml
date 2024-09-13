@@ -29,15 +29,3 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
-
-  api:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      - API_PORT=8080
-    command: node dist/api.js
-    volumes:
-      - ./src:/usr/src/app/src
-      - ./package.json:/usr/src/app/package.json
-      - ./tsconfig.json:/usr/src/app/tsconfig.json

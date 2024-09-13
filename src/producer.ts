@@ -1,10 +1,7 @@
 import { Kafka, Partitioners } from "kafkajs";
 import dotenv from "dotenv";
-import { countMessages } from "./database";
 
 dotenv.config();
-
-const MAX_MESSAGES = parseInt(process.env.MAX_MESSAGES || "100", 10);
 
 const kafka = new Kafka({
   clientId: "my-app",
@@ -15,13 +12,13 @@ const producer = kafka.producer({
   createPartitioner: Partitioners.LegacyPartitioner,
 });
 
+const messageCount = parseInt(process.argv[2], 10) || 20;
+
 async function run() {
   await producer.connect();
 
-  // const messagesLength = await countMessages();
-
-  for (let i = 1; i <= MAX_MESSAGES; i++) {
-    producer.send({
+  for (let i = 1; i <= messageCount; i++) {
+    await producer.send({
       topic: "my-topic",
       messages: [{ value: `Message ${i}` }],
     });

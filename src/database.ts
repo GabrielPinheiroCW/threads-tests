@@ -20,7 +20,7 @@ export async function saveMessage(message: string): Promise<void> {
   }
 }
 
-export async function createTable() {
+export async function createTables() {
   const client = await pool.connect();
   try {
     const queryText = `

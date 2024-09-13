@@ -1,44 +1,66 @@
-import axios from "axios";
-import { saveMessage } from "./database";
+import { ChildProcess, fork, Serializable } from "child_process";
 
-const API_BASE_URL = process.env.API_BASE_URL || "http://localhost:8080";
+export const DONE_SIGNAL = "item-done";
 
-async function processMessage(message: string, startTime: Date) {
-  try {
-    const processResponse = await axios.post(`${API_BASE_URL}/api/process`, {
-      message,
-    });
-    const processedData = processResponse.data.processedData;
-
-    await saveMessage(JSON.stringify(processedData));
-
-    return { success: true, processedData };
-  } catch (error) {
-    if (error instanceof Error) {
-      // console.error("Error processing message:", error.message);
-      return { success: false, error: error.message };
-    }
-
-    // console.error("Error processing message:", error);
-    return { success: false, error: "An unknown error occurred" };
-  }
+interface Config {
+  backgroundTaskFile: string | URL;
+  clusterSize: number;
+  onError: (error: Error) => void;
+  onMessage: (message: Serializable) => void;
 }
 
-process.on("message", async (message: string) => {
-  const startTime = new Date();
-  console.log(`Message received in ${startTime}`);
+function roundRobin(array: ChildProcess[], index = 0) {
+  return function () {
+    if (index >= array.length) index = 0;
 
-  await processMessage(message, startTime);
-  const processingTime = Date.now() - startTime.getTime();
+    return array[index++];
+  };
+}
 
-  console.log(`Message processed in ${processingTime}ms`);
+// Function to start child processes
+function initializeWorker({
+  backgroundTaskFile,
+  clusterSize,
+  onError,
+  onMessage,
+}: Config) {
+  const processes = new Map();
+  for (let index = 0; index < clusterSize; index++) {
+    const child = fork(backgroundTaskFile);
+    child.on("exit", () => {
+      processes.delete(child.pid);
+    });
 
-  if (process.send) {
-    // console.log(
-    //   `Worker finish processing ${
-    //     result.success ? "successfully" : "with error"
-    //   } in ${processingTime}ms`
-    // );
-    process.send("item-done");
+    child.on("error", (error) => {
+      if (onError) onError(error);
+    });
+
+    child.on("message", (message) => {
+      console.log(`[child.on(message)] ${message}`);
+      if (message !== DONE_SIGNAL) return;
+      onMessage(message);
+    });
+
+    processes.set(child.pid, child);
   }
-});
+
+  return {
+    getProcess: roundRobin([...processes.values()]),
+    killAll: () => {
+      processes.forEach((child) => child.kill());
+    },
+  };
+}
+
+export function initialize(config: Config) {
+  const { getProcess, killAll } = initializeWorker(config);
+
+  function sendToChild(message: Serializable) {
+    getProcess().send(message);
+  }
+
+  return {
+    sendToChild,
+    killAll,
+  };
+}

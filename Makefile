@@ -11,4 +11,4 @@ consumer:
 	npm run start:consumer
 
 producer:
-	npm run start:producer
+	npm run start:producer -- ${params}

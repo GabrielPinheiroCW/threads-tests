@@ -1,124 +1,67 @@
-import {
-  Kafka,
-  Consumer,
-  EachMessagePayload,
-  logLevel,
-  EachBatchPayload,
-} from "kafkajs";
-import { initialize } from "./cluster";
-import cliProgress from "cli-progress";
+import { Kafka, logLevel, EachBatchPayload, EachMessagePayload } from "kafkajs";
+import { initialize } from "./worker";
 import dotenv from "dotenv";
 import * as path from "path";
 
 dotenv.config();
 
+const WORKER_FILE = path.join(__dirname, "task.ts");
 const CLUSTER_SIZE = parseInt(process.env.CLUSTER_SIZE || "10", 10);
-const TASK_FILE = path.join(__dirname, "worker.ts");
-const MAX_RETRIES = 5;
-const RETRY_INTERVAL = 5000;
-const MAX_MESSAGES = parseInt(process.env.MAX_MESSAGES || "100", 10);
+const MAX_BATCH_SIZE = parseInt(process.env.MAX_BATCH_SIZE || "10", 10);
 
 const kafka = new Kafka({
   clientId: "my-app",
   brokers: (process.env.KAFKA_BROKERS || "localhost:9092").split(","),
   logLevel: logLevel.ERROR,
 });
-let consumer: Consumer;
-let progress: cliProgress.SingleBar | undefined;
-let childProcess: ReturnType<typeof initialize> | undefined;
 
-async function createConsumer() {
-  consumer = kafka.consumer({ groupId: "my-group" });
-  consumer.on(consumer.events.CRASH, handleConsumerCrash);
-  return consumer;
-}
+const consumer = kafka.consumer({ groupId: "my-group" });
 
 async function run() {
-  console.log(
-    `Starting consumer at ${new Date().toISOString()} with ${CLUSTER_SIZE} clusters`
-  );
-
-  // progress = new cliProgress.SingleBar(
-  //   {
-  //     format: "progress [{bar}] {percentage}% | {value}/{total} | {duration}s",
-  //     clearOnComplete: false,
-  //   },
-  //   cliProgress.Presets.shades_classic
-  // );
-
-  consumer = await createConsumer();
-  await connectWithRetry();
+  await consumer.connect();
 
   await consumer.subscribe({
     topic: "my-topic",
     fromBeginning: true,
   });
 
+  let processedMessages = 0;
+
+  const processes = initialize({
+    backgroundTaskFile: WORKER_FILE,
+    clusterSize: CLUSTER_SIZE,
+    onError: (error) => {
+      console.error("[onError]", error);
+    },
+    onMessage: () => {
+      processedMessages++;
+      console.log(`[onMessage] Message ${processedMessages} finished`);
+    },
+  });
+
   await consumer.run({
     eachBatch: async (payload: EachBatchPayload) => {
-      try {
-        let totalProcessed = 0;
+      console.log(
+        `[eachBatch] Processing batch with ${payload.batch.messages.length} messages`
+      );
 
-        childProcess = initialize({
-          backgroundTaskFile: TASK_FILE,
-          clusterSize: payload.batch.messages.length,
-          async onMessage(_: unknown) {
-            progress?.increment();
+      const messages = payload.batch.messages
+        .map((m) => m.value?.toString())
+        .filter((m) => m) as string[];
 
-            if (++totalProcessed !== MAX_MESSAGES) return;
-
-            console.log(
-              `Finishing consumer at ${new Date().toISOString()} with ${totalProcessed} messages processed`
-            );
-
-            // finish batch
-          },
-        });
-
-        payload.batch.messages.forEach(async (message) => {
-          const data = message.value?.toString();
-          childProcess?.sendToChild([data]);
-        });
-      } catch (error) {
-        console.error("\nError processing message:", error);
+      let sentMessage = 0;
+      while (sentMessage < messages.length) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        if (sentMessage - processedMessages < CLUSTER_SIZE) {
+          console.log(`${sentMessage}/${messages.length}`);
+          processes.sendToChild(messages[sentMessage]);
+          sentMessage++;
+        }
       }
     },
   });
 
-  // progress.start(MAX_MESSAGES, 0);
   console.log("Consumer started");
 }
 
-async function connectWithRetry(retries = MAX_RETRIES) {
-  try {
-    await consumer.connect();
-  } catch (error) {
-    console.error(`Failed to connect to Kafka. Retries left: ${retries}`);
-    if (retries > 0) {
-      await new Promise((resolve) => setTimeout(resolve, RETRY_INTERVAL));
-      await connectWithRetry(retries - 1);
-    } else {
-      throw new Error("Max retries reached. Unable to connect to Kafka.");
-    }
-  }
-}
-
-async function handleConsumerCrash(event: { payload: { error: Error } }) {
-  console.error("Consumer crashed. Error:", event.payload.error);
-  await gracefulShutdown();
-}
-
-run().catch(async (error) => {
-  console.error("Fatal error in consumer:", error);
-  await gracefulShutdown();
-});
-
-async function gracefulShutdown() {
-  await consumer?.disconnect();
-  progress?.stop();
-  childProcess?.killAll();
-  process.exit(0);
-}
-
-process.on("SIGINT", gracefulShutdown);
-process.on("SIGTERM", gracefulShutdown);
+run().catch(console.error);
