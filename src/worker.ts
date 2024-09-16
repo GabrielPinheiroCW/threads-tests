@@ -3,7 +3,7 @@ import { ChildProcess, fork, Serializable } from "child_process";
 export const DONE_SIGNAL = "item-done";
 
 interface Config {
-  backgroundTaskFile: string | URL;
+  backgroundTaskFile: string;
   clusterSize: number;
   onError: (error: Error) => void;
   onMessage: (message: Serializable) => void;
@@ -32,14 +32,17 @@ function initializeWorker({
     });
 
     child.on("error", (error) => {
-      if (onError) onError(error);
+      onError(error);
     });
 
     child.on("message", (message) => {
-      console.log(`[child.on(message)] ${message}`);
       if (message !== DONE_SIGNAL) return;
       onMessage(message);
     });
+
+    console.log(
+      `[initializeWorker] Started child #${index + 1} process ${child.pid}`
+    );
 
     processes.set(child.pid, child);
   }
